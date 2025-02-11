@@ -50,5 +50,12 @@ int main(int argc, char *argv[])
     std::array<std::string_view, 2> string_array{"string1"sv, "string2"sv};
     diplomat::span<const std::string_view> arg{string_array};
     auto str_slice_result = OptionOpaque::accepts_option_str_slice(std::make_optional(std::move(arg)));
-    simple_assert("option_str_slice functions", str_slice_result)
+    simple_assert("option_str_slice functions", str_slice_result);
+
+    simple_assert_eq("Optional string param (Some)", OptionOpaque::accepts_option_str(std::make_optional("accepts optional string!")), 24);
+    simple_assert_eq("Optional string param (None)", OptionOpaque::accepts_option_str(std::nullopt), 0);
+
+    constexpr uint32_t array[]{1, 2, 3, 4};
+    simple_assert_eq("Optional primitive param (Some)", OptionOpaque::accepts_option_primitive(std::make_optional(diplomat::span{array, 4})), 10);
+    simple_assert_eq("Optional primitive param (None)", OptionOpaque::accepts_option_primitive(std::nullopt), -1);
 }
