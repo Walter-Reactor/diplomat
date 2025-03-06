@@ -11,7 +11,7 @@ void main() {
     s.a!.assertInteger(101);
     s.b!.assertChar('餐'.runes.first);
     expect(s.c, 904);
-    s.d!.assertInteger(926535);
+    s.d.assertInteger(926535);
 
     final sn = OptionOpaque.newStructNones();
     expect(sn.a, null);
@@ -30,7 +30,9 @@ void main() {
 
     var maybeStruct = OptionOpaque.acceptsOptionInputStruct(null);
     expect(maybeStruct, null);
-    maybeStruct = OptionOpaque.acceptsOptionInputStruct(new OptionInputStruct(a: 7, b: null, c: OptionEnum.bar));
+    maybeStruct = OptionOpaque.acceptsOptionInputStruct(
+      new OptionInputStruct(a: 7, b: null, c: OptionEnum.bar),
+    );
     expect(maybeStruct?.a, 7);
     expect(maybeStruct?.b, null);
     expect(maybeStruct?.c, OptionEnum.bar);

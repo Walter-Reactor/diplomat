@@ -5,17 +5,16 @@ use crate::c::TyGenContext as C2TyGenContext;
 use crate::ErrorStore;
 use askama::Template;
 use diplomat_core::hir::{
-    self, EnumVariant, Mutability, OpaqueOwner, ReturnType, StructPathLike, SuccessType,
-    TyPosition, Type, TypeId,
+    self, Mutability, OpaqueOwner, ReturnType, StructPathLike, SuccessType, TyPosition, Type,
+    TypeId,
 };
-use std::borrow::Borrow;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
 /// A type name with a corresponding variable name, such as a struct field or a function parameter.
 struct NamedType<'a> {
     var_name: Cow<'a, str>,
-    _type_name: Cow<'a, str>,
+    type_name: Cow<'a, str>,
 }
 
 /// Everything needed for rendering a method.
@@ -51,30 +50,35 @@ pub(super) struct TyGenContext<'cx, 'tcx> {
     pub generating_struct_fields: bool,
 }
 
-impl<'ccx, 'tcx: 'ccx, 'bind> TyGenContext<'ccx, 'tcx> {
+impl<'ccx, 'tcx: 'ccx> TyGenContext<'ccx, 'tcx> {
     /// Checks for & outputs a list of modules with their parents that still need to be defined for this type
-    ///
     pub fn get_module_defs(
         &mut self,
         id: TypeId,
         _docstring: Option<&str>,
     ) -> Vec<(Cow<'tcx, str>, Cow<'tcx, str>)> {
-        let mut namespaces = self.formatter.fmt_namespaces(id);
+        let namespaces = self.formatter.fmt_namespaces(id);
         let mut modules: Vec<(Cow<'_, str>, Cow<'_, str>)> = Default::default();
 
-        while let Some(parent) = namespaces.next() {
-            if let Some(module) = namespaces.next() {
-                if self.submodules.contains(&module) {
-                    continue;
-                }
-                self.submodules.insert(module.clone());
-
-                modules.push((module, parent));
+        let mut parent = self.binding.module_name.clone();
+        for module in namespaces {
+            if self.submodules.contains(module) {
+                continue;
             }
+            println!("Adding submodule entry for {module}");
+            self.submodules.insert(module.into());
+
+            modules.push((module.into(), parent));
+            parent = module.into();
         }
         modules
     }
 
+    pub fn get_module(&mut self, id: TypeId) -> String {
+        self.formatter
+            .fmt_module(id, &self.binding.module_name)
+            .into_owned()
+    }
     /// Adds an enum definition to the current implementation.
     ///
     /// The enum is defined in C++ using a `class` with a single private field that is the
@@ -83,20 +87,27 @@ impl<'ccx, 'tcx: 'ccx, 'bind> TyGenContext<'ccx, 'tcx> {
     /// cannot be added to it.
     pub fn gen_enum_def(&mut self, ty: &'tcx hir::EnumDef, id: TypeId) {
         let type_name = self.formatter.fmt_type_name(id);
+        let type_name_unnamespaced = self.formatter.fmt_type_name_unnamespaced(id);
+
         let ctype = self.formatter.fmt_c_type_name(id);
 
-        let values = ty.variants.iter().collect::<Vec<_>>();
+        let values = ty
+            .variants
+            .iter()
+            .map(|e| self.formatter.fmt_enum_variant(e))
+            .collect::<Vec<_>>();
 
         #[derive(Template)]
-        #[template(path = "python/enum_impl.cpp.jinja", escape = "none")]
+        #[template(path = "nanobind/enum_impl.cpp.jinja", escape = "none")]
         struct ImplTemplate<'a> {
             _ty: &'a hir::EnumDef,
             _fmt: &'a PyFormatter<'a>,
             type_name: &'a str,
             _ctype: &'a str,
-            values: &'a [&'a EnumVariant],
+            values: Vec<Cow<'a, str>>,
             module: &'a str,
             modules: Vec<(Cow<'a, str>, Cow<'a, str>)>,
+            type_name_unnamespaced: &'a str,
         }
 
         ImplTemplate {
@@ -104,9 +115,10 @@ impl<'ccx, 'tcx: 'ccx, 'bind> TyGenContext<'ccx, 'tcx> {
             _fmt: self.formatter,
             type_name: &type_name,
             _ctype: &ctype,
-            values: values.as_slice(),
-            module: self.formatter.fmt_module(id).borrow(),
+            values,
+            module: &self.get_module(id),
             modules: self.get_module_defs(id, None),
+            type_name_unnamespaced: &type_name_unnamespaced,
         }
         .render_into(self.binding)
         .unwrap();
@@ -129,7 +141,7 @@ impl<'ccx, 'tcx: 'ccx, 'bind> TyGenContext<'ccx, 'tcx> {
             .collect::<Vec<_>>();
 
         #[derive(Template)]
-        #[template(path = "python/opaque_impl.cpp.jinja", escape = "none")]
+        #[template(path = "nanobind/opaque_impl.cpp.jinja", escape = "none")]
         struct ImplTemplate<'a> {
             // ty: &'a hir::OpaqueDef,
             fmt: &'a PyFormatter<'a>,
@@ -149,7 +161,7 @@ impl<'ccx, 'tcx: 'ccx, 'bind> TyGenContext<'ccx, 'tcx> {
             ctype: &ctype,
             methods: methods.as_slice(),
             modules: self.get_module_defs(id, None),
-            module: self.formatter.fmt_module(id),
+            module: self.get_module(id).into(),
             type_name_unnamespaced: &type_name_unnamespaced,
             _c_header: c_header,
         }
@@ -180,10 +192,8 @@ impl<'ccx, 'tcx: 'ccx, 'bind> TyGenContext<'ccx, 'tcx> {
             .collect::<Vec<_>>();
 
         #[derive(Template)]
-        #[template(path = "python/struct_impl.cpp.jinja", escape = "none")]
+        #[template(path = "nanobind/struct_impl.cpp.jinja", escape = "none")]
         struct ImplTemplate<'a> {
-            // ty: &'a hir::OpaqueDef,
-            // fmt: &'a Cpp2Formatter<'a>,
             type_name: &'a str,
             _ctype: &'a str,
             fields: &'a [NamedType<'a>],
@@ -195,14 +205,12 @@ impl<'ccx, 'tcx: 'ccx, 'bind> TyGenContext<'ccx, 'tcx> {
         }
 
         ImplTemplate {
-            // ty,
-            // fmt: &self.formatter,
             type_name: &type_name,
             _ctype: &ctype,
             fields: field_decls.as_slice(),
             methods: methods.as_slice(),
             modules: self.get_module_defs(id, None),
-            module: self.formatter.fmt_module(id),
+            module: self.get_module(id).into(),
             type_name_unnamespaced: &type_name_unnamespaced,
             _c_header: c_header,
         }
@@ -281,7 +289,7 @@ impl<'ccx, 'tcx: 'ccx, 'bind> TyGenContext<'ccx, 'tcx> {
 
         NamedType {
             var_name,
-            _type_name: type_name,
+            type_name,
         }
     }
 
