@@ -2,74 +2,21 @@ mod binding;
 mod formatter;
 mod ty;
 
-use std::{borrow::Cow, collections::HashSet};
+use std::{borrow::Cow, collections::HashSet, path::Path};
 
 use crate::{ErrorStore, FileMap};
 use binding::Binding;
 use diplomat_core::hir::{self, BackendAttrSupport};
 use formatter::PyFormatter;
+use serde::{Deserialize, Serialize};
 use ty::TyGenContext;
 
-/// Python support using the nanobind c++ library to create a python binding.
-///
-/// Support for automated python package building is still outstanding.
-/// To build, modify the following in the build.rs for your diplomat library:
-///
-///    let py_out_dir = Path::new(&out_dir).join("py");
-///    diplomat_tool::gen(
-///        Path::new("src/lib.rs"),
-///        "python",
-///        &py_out_dir,
-///        &DocsUrlGenerator::with_base_urls(None, Default::default()),
-///        None,
-///        false,
-///    )
-///    .expect("Error generating python");
-///
-///    // Run python to obtain the include path & linker
-///    let pyconfig_out = Command::new("python")
-///        .args(["-c", "from sysconfig import get_path\nprint(get_path(\"include\"))"])
-///        .output()
-///        .expect("Error running python");
-///    assert!(pyconfig_out.status.success());
-///    let py_include = String::from_utf8_lossy(&pyconfig_out.stdout);
-///    let py_lib = Path::new::<str>(py_include.borrow()).parent().unwrap().join("libs");
-///
-///    // Compile libnanobind
-///    let nanobind_dir = build_utils::get_workspace_root().unwrap().join("external").join("nanobind");
-///    cc::Build::new()
-///        .cpp(true)
-///        .flag("-std:c++17")
-///        .opt_level(3)
-///        .define("NDEBUG", None)
-///        .define("NB_COMPACT_ASSERTIONS", None)
-///        .include(nanobind_dir.join("include"))
-///        .include(nanobind_dir.join("ext").join("robin_map").join("include"))
-///        .include(py_include.trim())
-///        .file(nanobind_dir.join("src").join("nb_combined.cpp"))
-///        .compile("nanobind-static");
-///
-///    // Compile our extension
-///    let mut build = cc::Build::new();
-///    build
-///        .cpp(true)
-///        .flag("-std:c++17")
-///        .opt_level_str("s")
-///        .define("NDEBUG", None)
-///        .define("zm_EXPORTS", None)
-///        .define("NDEBUG", None)
-///        .define("NB_COMPACT_ASSERTIONS", None)
-///         // For windows:
-///        .define("_WINDLL", None)
-///        .define("_MBCS", None)    
-///        .define("_WINDOWS", None)
-///        .link_lib_modifier("+whole-archive")
-///        .file(py_out_dir.join("nanobindings.cpp"))
-///        .include(nanobind_include_dir)
-///        .include(py_include.trim());
-///    build.compile("zm_pyext");
-///
-///    println!("cargo::rustc-link-search=native={}", py_lib.display());
+// Python support using the nanobind c++ library to create a python binding.
+//
+// The generated nanobind.cpp files requires linking with nanobind
+// See the feature_test project for an example of a pyproject & CMakeLists.txt which can be compiled
+// using pip install. Compilation requires a C++ compiler & CMake, as well as a downloaded
+// copy of libnanobind.
 
 pub(crate) fn attr_support() -> BackendAttrSupport {
     let mut a = BackendAttrSupport::default();
@@ -98,13 +45,30 @@ pub(crate) fn attr_support() -> BackendAttrSupport {
     a
 }
 
-pub(crate) fn run(tcx: &hir::TypeContext) -> (FileMap, ErrorStore<String>) {
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct PythonConfig {
+    lib_name: String,
+}
+
+pub(crate) fn run<'tcx>(
+    tcx: &'tcx hir::TypeContext,
+    conf_path: Option<&Path>,
+) -> (FileMap, ErrorStore<'tcx, String>) {
+    let conf_path = conf_path.expect("Nanobind library needs to be called with config");
+
+    let conf_str = std::fs::read_to_string(conf_path)
+        .unwrap_or_else(|err| panic!("Failed to open config file {conf_path:?}: {err}"));
+    let PythonConfig { lib_name } = toml::from_str::<PythonConfig>(&conf_str)
+        .expect("Failed to parse config. Required field is 'lib_name'");
+
     let files = FileMap::default();
     let formatter = PyFormatter::new(tcx);
     let errors = ErrorStore::default();
 
-    let nanobind_filepath = "nanobindings.cpp";
+    let nanobind_filepath = format!("{lib_name}_ext.cpp");
     let mut binding = Binding::new();
+    binding.module_name = Cow::from(lib_name);
+
     let mut submodules = HashSet::<Cow<str>>::new();
     for (id, ty) in tcx.all_types() {
         if ty.attrs().disable {
@@ -133,20 +97,6 @@ pub(crate) fn run(tcx: &hir::TypeContext) -> (FileMap, ErrorStore<String>) {
             generating_struct_fields: false,
         };
 
-        // Assert everything shares the same root namespace. If this becomes too restrictive, we can generate multiple modules maybe?
-        if let Some(ns) = ty
-            .attrs()
-            .namespace
-            .as_ref()
-            .and_then(|ns| ns.split("::").next())
-        {
-            if context.binding.module_name.is_empty() {
-                context.binding.module_name = Cow::from(ns);
-            } else {
-                assert_eq!(context.binding.module_name, Cow::from(ns));
-            }
-        }
-
         context
             .binding
             .includes
@@ -162,18 +112,40 @@ pub(crate) fn run(tcx: &hir::TypeContext) -> (FileMap, ErrorStore<String>) {
         }
         drop(guard);
     }
-
     files.add_file(nanobind_filepath.to_owned(), binding.to_string());
 
+    // Write out wheel metadata files
+    {
+        // #[derive(Template)]
+        // #[template(path = "nanobind/pyproject.toml.jinja", escape = "none")]
+        // struct ImplTemplate<'a> {
+        //     _ty: &'a hir::EnumDef,
+        //     _fmt: &'a PyFormatter<'a>,
+        //     type_name: &'a str,
+        //     _ctype: &'a str,
+        //     values: &'a [&'a EnumVariant],
+        //     module: &'a str,
+        //     modules: Vec<(Cow<'a, str>, Cow<'a, str>)>,
+        // }
+
+        // ImplTemplate {
+        //     _ty: ty,
+        //     _fmt: self.formatter,
+        //     type_name: &type_name,
+        //     _ctype: &ctype,
+        //     values: values.as_slice(),
+        //     module: self.formatter.fmt_module(id).borrow(),
+        //     modules: self.get_module_defs(id, None),
+        // }
+        // .render_into(self.binding)
+        // .unwrap();
+    }
     (files, errors)
 }
 
 #[cfg(test)]
 mod test {
-    use diplomat_core::{
-        ast::{self},
-        hir::{self, TypeDef},
-    };
+    use diplomat_core::hir::{self, TypeDef};
     use quote::quote;
     use std::borrow::Cow;
     use std::collections::HashSet;
@@ -202,7 +174,7 @@ mod test {
         let item = syn::parse2::<syn::File>(tokens).expect("failed to parse item ");
 
         let mut attr_validator = hir::BasicAttributeValidator::new("python");
-        attr_validator.support = crate::python::attr_support();
+        attr_validator.support = crate::nanobind::attr_support();
 
         let tcx = match hir::TypeContext::from_syn(&item, attr_validator) {
             Ok(context) => context,
@@ -223,29 +195,30 @@ mod test {
             _ => panic!("Failed to find opaque type from AST"),
         };
 
-        let formatter = crate::python::PyFormatter::new(&tcx);
+        let formatter = crate::nanobind::PyFormatter::new(&tcx);
         let errors = crate::ErrorStore::default();
-        let mut binding = crate::python::Binding::new();
+        let mut binding = crate::nanobind::Binding::new();
         binding.module_name = std::borrow::Cow::Borrowed("pymod");
 
         let decl_header_path = formatter.fmt_decl_header_path(type_id);
         let impl_file_path = formatter.fmt_impl_file_path(type_id);
 
-        let mut context = crate::python::TyGenContext {
+        let mut submodules = HashSet::<Cow<str>>::new();
+        let mut context = crate::nanobind::TyGenContext {
             formatter: &formatter,
             errors: &errors,
-            c: crate::c::TyGenContext {
+            c2: crate::c::TyGenContext {
                 tcx: &tcx,
                 formatter: &formatter.c,
                 errors: &errors,
                 is_for_cpp: false,
                 id: type_id.into(),
-                decl_header_path: decl_header_path.clone().into(),
-                impl_header_path: impl_file_path.clone().into(),
+                decl_header_path: &decl_header_path,
+                impl_header_path: &impl_file_path,
             },
             binding: &mut binding,
             generating_struct_fields: false,
-            submodules: HashSet::<Cow<str>>::new(),
+            submodules: &mut submodules,
         };
 
         context.gen_opaque_def(opaque_def, type_id);
@@ -269,7 +242,7 @@ mod test {
         let item = syn::parse2::<syn::File>(tokens).expect("failed to parse item ");
 
         let mut attr_validator = hir::BasicAttributeValidator::new("python");
-        attr_validator.support = crate::python::attr_support();
+        attr_validator.support = crate::nanobind::attr_support();
 
         let tcx = match hir::TypeContext::from_syn(&item, attr_validator) {
             Ok(context) => context,
@@ -290,29 +263,30 @@ mod test {
             _ => panic!("Failed to find opaque type from AST"),
         };
 
-        let formatter = crate::python::PyFormatter::new(&tcx);
+        let formatter = crate::nanobind::PyFormatter::new(&tcx);
         let errors = crate::ErrorStore::default();
-        let mut binding = crate::python::Binding::new();
+        let mut binding = crate::nanobind::Binding::new();
         binding.module_name = std::borrow::Cow::Borrowed("pymod");
 
         let decl_header_path = formatter.fmt_decl_header_path(type_id);
         let impl_file_path = formatter.fmt_impl_file_path(type_id);
 
-        let mut context = crate::python::TyGenContext {
+        let mut submodules = HashSet::<Cow<str>>::new();
+        let mut context = crate::nanobind::TyGenContext {
             formatter: &formatter,
             errors: &errors,
-            c: crate::c::TyGenContext {
+            c2: crate::c::TyGenContext {
                 tcx: &tcx,
                 formatter: &formatter.c,
                 errors: &errors,
                 is_for_cpp: false,
                 id: type_id.into(),
-                decl_header_path: decl_header_path.clone().into(),
-                impl_header_path: impl_file_path.clone().into(),
+                decl_header_path: &decl_header_path,
+                impl_header_path: &impl_file_path,
             },
             binding: &mut binding,
             generating_struct_fields: false,
-            submodules: HashSet::<Cow<str>>::new(),
+            submodules: &mut submodules,
         };
 
         context.gen_enum_def(enum_def, type_id);
@@ -329,14 +303,14 @@ mod test {
                 pub struct Thingy {
                     pub a: bool,
                     pub b: u8,
-                    pub mut c: f64,
+                    pub c: f64,
                 }
             }
         };
         let item = syn::parse2::<syn::File>(tokens).expect("failed to parse item ");
 
         let mut attr_validator = hir::BasicAttributeValidator::new("python");
-        attr_validator.support = crate::python::attr_support();
+        attr_validator.support = crate::nanobind::attr_support();
 
         let tcx = match hir::TypeContext::from_syn(&item, attr_validator) {
             Ok(context) => context,
@@ -357,29 +331,30 @@ mod test {
             _ => panic!("Failed to find opaque type from AST"),
         };
 
-        let formatter = crate::python::PyFormatter::new(&tcx);
+        let formatter = crate::nanobind::PyFormatter::new(&tcx);
         let errors = crate::ErrorStore::default();
-        let mut binding = crate::python::Binding::new();
+        let mut binding = crate::nanobind::Binding::new();
         binding.module_name = std::borrow::Cow::Borrowed("pymod");
 
         let decl_header_path = formatter.fmt_decl_header_path(type_id);
         let impl_file_path = formatter.fmt_impl_file_path(type_id);
 
-        let mut context = crate::python::TyGenContext {
+        let mut submodules = HashSet::<Cow<str>>::new();
+        let mut context = crate::nanobind::TyGenContext {
             formatter: &formatter,
             errors: &errors,
-            c: crate::c::TyGenContext {
+            c2: crate::c::TyGenContext {
                 tcx: &tcx,
                 formatter: &formatter.c,
                 errors: &errors,
                 is_for_cpp: false,
                 id: type_id.into(),
-                decl_header_path: decl_header_path.clone().into(),
-                impl_header_path: impl_file_path.clone().into(),
+                decl_header_path: &decl_header_path,
+                impl_header_path: &impl_file_path,
             },
             binding: &mut binding,
             generating_struct_fields: false,
-            submodules: HashSet::<Cow<str>>::new(),
+            submodules: &mut submodules,
         };
 
         context.gen_struct_def(struct_def, type_id);

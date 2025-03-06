@@ -274,16 +274,17 @@ impl<'cx> TyGenContext<'_, 'cx> {
                 /// Get the name/initializer of the allocator needed for a particular type
                 fn alloc_name<P: TyPosition>(ty: &hir::StructDef<P>, field_ty: &Type<P>) -> Option<String> {
                     if let &hir::Type::Slice(slice) = field_ty {
-                        if let Some(lt) = slice.lifetime() {
-                            let MaybeStatic::NonStatic(lt) = lt else {
-                                panic!("'static not supported in Dart");
-                            };
-                            Some(format!(
-                                "{lt_name}AppendArray.isNotEmpty ? _FinalizedArena.withLifetime({lt_name}AppendArray).arena : temp",
-                                lt_name = ty.lifetimes.fmt_lifetime(lt),
-                            ))
-                        } else {
-                            None
+                        match slice.lifetime() {
+                            Some(MaybeStatic::NonStatic(lt)) => {
+                                Some(format!(
+                                    "{lt_name}AppendArray.isNotEmpty ? _FinalizedArena.withLifetime({lt_name}AppendArray).arena : temp",
+                                    lt_name = ty.lifetimes.fmt_lifetime(lt),
+                                ))
+                            }
+                            Some(MaybeStatic::Static) => {
+                                panic!("Dart does not support 'static in input structs")
+                            }
+                            _ => None
                         }
                     } else if let &hir::Type::Struct(..) = field_ty {
                         Some("temp".into())
@@ -597,8 +598,10 @@ impl<'cx> TyGenContext<'_, 'cx> {
                 "set {}({params})",
                 self.formatter.fmt_accessor_name(name, method)
             ),
-            Some(SpecialMethod::Stringifier) => "@core.override\n  String toString()".into(),
-            Some(SpecialMethod::Comparison) => format!("int compareTo({type_name} other)"),
+            Some(SpecialMethod::Stringifier) => "@override\n  String toString()".into(),
+            Some(SpecialMethod::Comparison) => {
+                format!("@override\n  int compareTo({type_name} other)")
+            }
             Some(SpecialMethod::Iterator) => format!("{return_ty} _iteratorNext({params})"),
             Some(SpecialMethod::Iterable) => format!("{return_ty} get iterator"),
             Some(SpecialMethod::Indexer) => format!("{return_ty} operator []({params})"),
@@ -1012,20 +1015,17 @@ impl<'cx> TyGenContext<'_, 'cx> {
                 let type_name = self.formatter.fmt_type_name(id);
                 format!("{type_name}.values.firstWhere((v) => v._ffi == {var_name})").into()
             }
-            Type::Slice(slice) => {
-                if let Some(lt) = slice.lifetime() {
-                    let MaybeStatic::NonStatic(lifetime) = lt else {
-                        panic!("'static not supported in Dart");
-                    };
-                    format!(
-                        "{var_name}._toDart({}Edges)",
-                        lifetime_env.fmt_lifetime(lifetime)
-                    )
-                    .into()
-                } else {
-                    format!("{var_name}._toDart([])").into()
+            Type::Slice(slice) => match slice.lifetime() {
+                Some(MaybeStatic::NonStatic(lifetime)) => format!(
+                    "{var_name}._toDart({}Edges)",
+                    lifetime_env.fmt_lifetime(lifetime)
+                )
+                .into(),
+                Some(MaybeStatic::Static) => {
+                    format!("{var_name}._toDart([], isStatic: true)").into()
                 }
-            }
+                _ => format!("{var_name}._toDart([])").into(),
+            },
             Type::DiplomatOption(ref inner) => {
                 let conversion = self.gen_c_to_dart_for_type(
                     inner,
@@ -1200,7 +1200,7 @@ impl<'cx> TyGenContext<'_, 'cx> {
                         hir::Slice::Primitive(_, hir::PrimitiveType::Int(hir::IntType::U64)) => format!("this[i].clamp(0, {})", u64::MAX).into(),
                         hir::Slice::Strs(e) => {
                             self.gen_slice(&hir::Slice::Str(None, *e));
-                            format!("this[i].{}(alloc);", self.formatter.fmt_str_alloc_in(*e)).into()
+                            format!("this[i].{}(alloc)", self.formatter.fmt_str_alloc_in(*e)).into()
                         },
                         _ => unreachable!("unknown AST/HIR variant"),
                     }).into(),
