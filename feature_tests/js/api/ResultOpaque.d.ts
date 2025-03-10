@@ -23,8 +23,6 @@ export class ResultOpaque {
 
     static newInEnumErr(i: number): ErrorEnum;
 
-    takesStr(v: string): ResultOpaque;
-
     assertInteger(i: number): void;
 
     constructor(i: number);
