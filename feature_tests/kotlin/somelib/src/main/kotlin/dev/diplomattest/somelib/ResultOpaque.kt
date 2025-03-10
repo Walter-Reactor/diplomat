@@ -17,6 +17,7 @@ internal interface ResultOpaqueLib: Library {
     fun ResultOpaque_new_int(i: Int): ResultIntUnit
     fun ResultOpaque_new_failing_int(i: Int): ResultUnitInt
     fun ResultOpaque_new_in_enum_err(i: Int): ResultIntPointer
+    fun ResultOpaque_takes_str(handle: Pointer, v: Slice): Pointer
     fun ResultOpaque_assert_integer(handle: Pointer, i: Int): Unit
 }
 
@@ -160,8 +161,18 @@ class ResultOpaque internal constructor (
     
     /** When we take &str, the return type becomes a Result
     *Test that this interacts gracefully with returning a reference type
-    *TODO: Fix this - currently returning a reference fails when the return type is a result, which in this case happens because of &str
     */
+    fun takesStr(v: String): ResultOpaque {
+        val (vMem, vSlice) = PrimitiveArrayTools.readUtf8(v)
+        
+        val returnVal = lib.ResultOpaque_takes_str(handle, vSlice);
+        val selfEdges: List<Any> = listOf(this)
+        val handle = returnVal 
+        val returnOpaque = ResultOpaque(handle, selfEdges)
+        if (vMem != null) vMem.close()
+        return returnOpaque
+    }
+    
     fun assertInteger(i: Int): Unit {
         
         val returnVal = lib.ResultOpaque_assert_integer(handle, i);
