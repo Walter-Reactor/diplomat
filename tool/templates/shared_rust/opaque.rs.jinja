@@ -1,0 +1,25 @@
+{%- extends "base.rs.jinja" -%}
+
+{%- block type_def -%}
+{%- let lifetimes = self.lifetime_env.all_lifetimes().collect::<Vec<_>>() -%}
+{%- if lifetimes.len() > 0 -%} use std::marker::PhantomData;
+
+{% endif -%}
+
+pub struct {{type_name}}{{self.generic_lifetimes()}} {%- if lifetimes.len() > 0 %} {
+    {%- for lt in lifetimes %}
+    {{ lifetime_env.fmt_lifetime(*lt) }}_marker : PhantomData<&'{{lifetime_env.fmt_lifetime(*lt)}} ()>,
+    {%- endfor %}
+}
+{%- else -%} ; {%- endif %}
+
+impl{{self.generic_lifetimes()}} Drop for {{type_name}}{{self.generic_lifetimes()}} {
+    fn drop(&mut self) {
+        unsafe { {{dtor_abi}}(self) }
+    }
+}
+{%- endblock %}
+
+{%- block abi_methods %}
+    fn {{dtor_abi}}(this : *mut {{type_name}});
+{% endblock -%}

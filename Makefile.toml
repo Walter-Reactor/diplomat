@@ -59,6 +59,10 @@ dependencies = ["test-kotlin-example", "test-kotlin-feature"]
 category = "Tests"
 dependencies = ["test-nanobind-feature"]
 
+[tasks.test-shared-rust]
+category = "Tests"
+dependencies = ["test-rust-feature"]
+
 [tasks.test-example]
 category = "Tests"
 dependencies = [
@@ -79,6 +83,7 @@ dependencies = [
     "test-dart-feature",
     "test-kotlin-feature",
     "test-nanobind-feature",
+    "test-rust-feature",
 ]
 
 [tasks.test-cpp-example]
@@ -213,6 +218,17 @@ script = '''
 exit_on_error true
 exec --fail-on-error uvx --with feature_tests/nanobind --refresh-package somelib pytest feature_tests/nanobind/test/
 '''
+
+[tasks.test-rust-feature]
+category = "Tests"
+dependencies = ["build-feature"]
+script_runner = "@duckscript"
+script = '''
+exit_on_error true
+cd ./feature_tests/shared_rust
+exec --fail-on-error cargo test
+'''
+
 
 [tasks.check-c-example]
 category = "Tests"
@@ -362,6 +378,7 @@ dependencies = [
     "gen-dart-feature",
     "gen-kotlin-feature",
     "gen-nanobind-feature",
+    "gen-rust-feature",
 ]
 
 [tasks.gen-example]
@@ -393,6 +410,10 @@ dependencies = ["gen-kotlin-feature", "gen-kotlin-example"]
 [tasks.gen-js]
 category = "Code generation"
 dependencies = ["gen-js-feature", "gen-js-example"]
+
+[tasks.gen-shared-rust]
+category = "Code generation"
+dependencies = ["gen-rust-feature"]
 
 [tasks.gen-c-feature]
 category = "Code generation"
@@ -521,6 +542,16 @@ rm -fr nanobind/src/sub_modules
 mv nanobind/src/cpp/sub_modules nanobind/src/
 rm -rf nanobind/src/cpp/
 '''
+
+[tasks.gen-rust-feature]
+category = "Code generation"
+script_runner = "@duckscript"
+script = '''
+exit_on_error true
+!include_files ./support/functions.ds
+generate_generic feature_tests shared_rust bindings/src
+'''
+
 # Build deps
 
 [tasks.build-tool]

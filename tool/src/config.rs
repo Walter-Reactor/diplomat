@@ -104,6 +104,10 @@ impl Config {
             } else {
                 self.cpp_config.set(&key.replace("cpp.", ""), value);
             }
+        } else if key.starts_with("shared_rust.") {
+            if SharedConfig::overrides_shared(key) {
+                self.language_overrides.insert(key.to_string(), value);
+            }
         } else {
             self.shared_config.set(key, value)
         }

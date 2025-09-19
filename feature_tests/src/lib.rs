@@ -30,4 +30,5 @@ pub mod traits;
 #[diplomat::config(nanobind.lib_name = somelib)]
 #[diplomat::config(demo_gen.lib_name = somelib)]
 #[diplomat::config(cpp.lib_name = somelib)]
+#[diplomat::config(shared_rust.lib_name = somelib)]
 struct KotlinConfig;
