@@ -2,7 +2,9 @@ use std::borrow::Cow;
 
 use askama::Template;
 use diplomat_core::hir::{
-    Lifetime, LifetimeEnv, MaybeOwn, MaybeStatic, Method, OpaqueOwner, ReturnType, SelfType, Slice, SpecialMethod, StringEncoding, StructPathLike, SuccessType, SymbolId, TyPosition, Type, TypeDef, TypeId
+    Lifetime, LifetimeEnv, MaybeOwn, MaybeStatic, Method, OpaqueOwner, ReturnType, SelfType, Slice,
+    SpecialMethod, StringEncoding, StructPathLike, SuccessType, SymbolId, TyPosition, Type,
+    TypeDef, TypeId,
 };
 
 use crate::shared_rust::{
@@ -26,14 +28,14 @@ pub(super) struct FunctionInfo<'tcx> {
     lifetime_env: &'tcx LifetimeEnv,
     generic_lifetimes: Vec<MaybeStatic<Lifetime>>,
     abi_lifetimes: Vec<MaybeStatic<Lifetime>>,
-    special_method : Option<SpecialMethod>,
+    special_method: Option<SpecialMethod>,
 }
 
 #[derive(Template)]
 #[template(path = "shared_rust/special_methods.rs.jinja", escape = "none")]
 pub(super) struct SpecialMethodInfo<'tcx> {
-    inner : FunctionInfo<'tcx>,
-    type_name : Cow<'tcx, str>,
+    inner: FunctionInfo<'tcx>,
+    type_name: Cow<'tcx, str>,
 }
 
 #[derive(Default, Clone)]
@@ -65,11 +67,13 @@ impl<'a> ParamInfo<'a> {
         }
     }
 
-    fn render_without_borrow(&self, env : &LifetimeEnv, is_abi: bool) -> String {
+    fn render_without_borrow(&self, env: &LifetimeEnv, is_abi: bool) -> String {
         if is_abi {
-            self.type_info.render_without_borrow(env, &self.abi_override)
+            self.type_info
+                .render_without_borrow(env, &self.abi_override)
         } else {
-            self.type_info.render_without_borrow(env, &ABITypeInfo::default())
+            self.type_info
+                .render_without_borrow(env, &ABITypeInfo::default())
         }
     }
 
@@ -307,10 +311,7 @@ impl<'tcx> FunctionInfo<'tcx> {
         match out {
             Type::Slice(Slice::Str(lt, enc)) if lt.is_some() => match enc {
                 // From DiplomatUtf8SliceStr -> &str
-                StringEncoding::Utf8 => Some((
-                    "".into(),
-                    ".into()".into(),
-                )),
+                StringEncoding::Utf8 => Some(("".into(), ".into()".into())),
                 // For any other kind of string conversion, we want to convert from `DiplomatSliceStr` -> &[u8] or &[u16]:
                 _ => Some(("".into(), ".into()".into())),
             },
@@ -459,21 +460,23 @@ impl<'tcx> FunctionInfo<'tcx> {
 
     /// Generate an impl block for special Rust trait stuff.
     /// Assumes that any special method can be generated as an `impl` trait block separately from the original method definition, and just call into that.
-    /// 
+    ///
     /// TODO: If you're interested in hiding the underlying conversion function, I'd add a `vis` modifier to [`FunctionInfo`] and make `functions` a mutable reference.
     pub(super) fn get_special_methods(
-        ctx : &mut FileGenContext,
+        ctx: &mut FileGenContext,
         functions: Vec<FunctionInfo<'tcx>>,
-        self_type : Cow<'tcx, str>,
+        self_type: Cow<'tcx, str>,
     ) -> Vec<SpecialMethodInfo<'tcx>> {
-        let mut special_methods = Vec::new();
-        for f in functions {
-            if let Some(special_method) = &f.special_method {
-                // TODO: `impl Index` is not, unfortunately, super easy to implement.
-                // special_methods.push(SpecialMethodInfo { inner: f, type_name: self_type.clone() })
-            }
-        }
-        special_methods
+        functions
+            .iter()
+            .filter_map(|func| {
+                if let Some(special_method) = &func.special_method {
+                    // TODO: `impl Index` is not, unfortunately, super easy to implement.
+                    // special_methods.push(SpecialMethodInfo { inner: f, type_name: self_type.clone() })
+                }
+                None
+            })
+            .collect()
     }
 
     /// Given any type, generate C ABI info.
